@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: ai-sourcer
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # ONE worker: state lives in process memory. Threads give concurrency.
+    startCommand: gunicorn -w 1 --threads 8 -t 120 wsgi:app
+    healthCheckPath: /healthz
+    envVars:
+      - {key: SECRET_KEY, generateValue: true}
+      - {key: BASE_URL, sync: false}
+      - {key: GITHUB_TOKEN, sync: false}
+      - {key: BRAVE_API_KEY, sync: false}
+      - {key: EMAIL_BACKEND, value: brevo}
+      - {key: BREVO_API_KEY, sync: false}
+      - {key: SENDER_EMAIL, sync: false}
+      - {key: SMTP_HOST, sync: false}
+      - {key: SMTP_PORT, value: "587"}
+      - {key: SMTP_USER, sync: false}
+      - {key: SMTP_PASS, sync: false}
+      - {key: SENDER_NAME, sync: false}
+      - {key: SENDER_ADDRESS, sync: false}
+      - {key: ANTHROPIC_API_KEY, sync: false}
