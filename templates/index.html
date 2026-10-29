@@ -1,0 +1,88 @@
+<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Sourcer</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--card:#f5f5f7;--mut:#777;--ac:#2f6fed;--ok:#17a34a}
+@media(prefers-color-scheme:dark){:root{--bg:#141416;--fg:#eee;--card:#212125;--mut:#999}}
+*{box-sizing:border-box}body{font:15px system-ui;background:var(--bg);color:var(--fg);margin:0;padding:12px;max-width:900px;margin:auto}
+textarea,input{width:100%;padding:9px;border-radius:8px;border:1px solid #8884;background:var(--card);color:var(--fg);margin:4px 0;font:inherit}
+button{background:var(--ac);color:#fff;border:0;padding:10px 16px;border-radius:8px;font:inherit;cursor:pointer}
+button:disabled{opacity:.5}.card{background:var(--card);border-radius:10px;padding:10px;margin:8px 0;cursor:pointer}
+.row{display:flex;justify-content:space-between;gap:8px}.pct{font-weight:700;color:var(--ok)}
+.badge{background:var(--ok);color:#fff;border-radius:6px;padding:1px 6px;font-size:12px}
+.mut{color:var(--mut);font-size:13px}pre{white-space:pre-wrap;font-size:13px}
+</style></head><body>
+<h2>AI Candidate Sourcer</h2>
+<textarea id="jd" rows="6" placeholder="Paste job description…"></textarea>
+<input id="loc" placeholder="Location (optional)">
+<button id="go" onclick="search()">Find candidates</button> <span id="st" class="mut"></span>
+<div id="prof" class="mut"></div>
+
+<div id="send" hidden>
+  <h3>Outreach</h3>
+  <input id="subj" value="Opportunity: {job_title}">
+  <textarea id="body" rows="5">Hi {first_name},
+
+Your public work caught our eye and we think you'd be a strong fit for our {job_title} role. Open to a quick chat?</textarea>
+  <input id="minm" type="number" placeholder="Min match % (e.g. 60)">
+  <label><input type="checkbox" id="onlyopen" style="width:auto"> Open-to-work only</label><br>
+  <button onclick="sendAll()">Send Email</button>
+  <div id="dash" class="mut"></div>
+</div>
+
+<h3 id="h1" hidden>Open to Work</h3><div id="open"></div>
+<h3 id="h2" hidden>Other Profiles</h3><div id="other"></div>
+<div id="enr" class="card" hidden></div>
+
+<script>
+const $=s=>document.querySelector(s),sleep=ms=>new Promise(r=>setTimeout(r,ms));
+let RID=null;
+// Render free tier cold-starts: retry 5xx/network errors for ~40s
+async function api(p,o,n=8){for(let i=0;i<n;i++){try{const r=await fetch(p,o);if(r.status<500)return r}catch(e){}
+  $('#st').textContent='Waking server…';await sleep(5000)}throw Error('server unavailable')}
+const post=(p,b)=>api(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});
+
+async function search(){
+  $('#go').disabled=true;
+  const r=await post('/api/search',{jd:$('#jd').value,location:$('#loc').value});
+  const j=await r.json(); if(!r.ok){$('#st').textContent=j.error;$('#go').disabled=false;return}
+  RID=j.run_id;
+  while(true){
+    const d=await(await api('/api/runs/'+RID)).json();
+    if(d.error==='expired'){$('#st').textContent='Run expired (server restarted). Search again.';break}
+    $('#st').textContent=d.status+'…';
+    if(d.status==='done'){render(d);break}
+    if(d.status==='error'){$('#st').textContent=d.error;break}
+    await sleep(2000)}
+  $('#go').disabled=false}
+
+function card(c){return `<div class="card" onclick="enrich('${c.id}')"><div class="row"><b>${esc(c.name)}
+ ${c.open_to_work?'<span class="badge">Open to work</span>':''}</b><span class="pct">${c.match}%</span></div>
+ <div class="mut">${esc(c.platform)} · ${esc(c.location||'')} ${c.email?'· ✉':''}</div>
+ <div class="mut">${esc((c.headline||'').slice(0,120))}</div></div>`}
+const esc=s=>String(s).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+function render(d){
+  $('#st').textContent=`${d.open.length+d.other.length} profiles`;
+  $('#prof').textContent='Skills: '+d.profile.skills.join(', ')+' | Sources: '+JSON.stringify(d.counts);
+  $('#open').innerHTML=d.open.map(card).join('');$('#other').innerHTML=d.other.map(card).join('');
+  $('#h1').hidden=$('#h2').hidden=$('#send').hidden=false}
+
+async function enrich(id){
+  const box=$('#enr');box.hidden=false;box.textContent='Scanning public sources…';box.scrollIntoView();
+  const d=await(await post(`/api/runs/${RID}/candidates/${id}/enrich`)).json();
+  const L=Object.entries(d.links||{}).map(([k,v])=>`<a href="${esc(v)}" target="_blank">${k}</a>`).join(' · ');
+  box.innerHTML=`<b>Enrichment</b><pre>Emails: ${d.emails.join(', ')||'—'}\nPhones: ${d.phones.join(', ')||'—'}</pre>
+   <div>${L}</div><div>${d.resumes.map(u=>`<a href="${esc(u)}" target="_blank">resume</a>`).join(' · ')}</div>
+   <div class="mut">Checked: ${d.sources.length} public pages</div>`}
+
+async function sendAll(){
+  const r=await post(`/api/runs/${RID}/send`,{subject:$('#subj').value,body:$('#body').value,
+    min_match:$('#minm').value||0,only_open:$('#onlyopen').checked});
+  const j=await r.json(); if(!r.ok){alert(j.error);return}
+  $('#dash').textContent=`Queued ${j.queued} (skipped ${j.skipped_no_email} with no email)`;poll()}
+async function poll(){
+  const s=await(await api(`/api/runs/${RID}/stats`)).json();
+  $('#dash').innerHTML=`Status: ${s.status} · Sent ${s.sent} · Unique opens ${s.unique_opens} · Clicks ${s.unique_clicks}<br>
+   Engaged: ${(s.engaged||[]).map(e=>esc(e.name)+(e.clicked?' (clicked)':'')).join(', ')||'—'}`;
+  if(s.status==='sending'||s.status==='done')setTimeout(poll,5000)}
+</script></body></html>
